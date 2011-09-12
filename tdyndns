@@ -1,0 +1,372 @@
+#!/usr/bin/ruby
+# -*- mode:ruby -*-
+
+require 'uri'
+require 'cgi'
+require 'timeout'
+require 'resolv'
+require 'socket'
+require 'base64'
+
+module TOGoS ; module DynDNS
+  VERSION = "2011-09-12"
+  
+  class SimpleHTTPClient
+    def self.instance ; @instance ||= self.new ; end
+    
+    attr_accessor :use_resolv
+    attr_accessor :fetch_uri_timeout
+    attr_accessor :user_agent
+    
+    def initialize
+      @use_resolv = true
+      @fetch_uri_timeout = 15
+      @user_agent = "TOGoS's DynDNS Updater 2, #{VERSION}"
+    end
+
+    def fetch_uri( uri )
+      timeout @fetch_uri_timeout do
+	uri = URI.parse(uri) if uri.is_a?(String)
+	unless uri.scheme = 'http'
+	  raise "Only HTTP supported"
+	end
+
+	fp = uri.path + (uri.query ? "?#{uri.query}" : '')
+	if @use_resolv
+	  hostip = Resolv.getaddress( uri.host )
+	else
+	  hostip = uri.host
+	end
+	sock = TCPSocket.new( hostip, uri.port.to_i )
+	sock.write "GET #{fp} HTTP/1.0\r\n"
+	sock.write "Host: #{uri.host}\r\n"
+	sock.write "User-Agent: #{user_agent}\r\n"
+	sock.write "Connection: close\r\n"
+	if uri.user
+	  token = Base64.encode64("#{uri.user}:#{uri.password}").strip
+	  auth = "Basic #{token}"
+	  sock.write "Authorization: #{auth}\r\n"
+	end
+	sock.write "\r\n"
+	sock.flush()
+
+	while l = sock.gets and ( l.strip! ; l != '' ) ; end
+	data = sock.read
+
+	sock.close()
+	return data
+      end
+    end
+  end
+  
+  class TOGoSIPFetcher
+    attr_accessor :uri
+    
+    def fetch_ip
+      raise "Oops, deleted this code!"
+    end
+  end
+  
+  class IfconfigIPFetcher
+    attr_accessor :interface
+    
+    def initialize( iface ) 
+      @interface = iface
+    end
+    
+    def fetch_ip
+      `ifconfig #{@interface}` =~ /inet addr:([^\s]+)/
+      return $1
+    end
+  end
+  
+  class DynDNSUpdater
+    attr_accessor :username, :password, :domain, :working_dir
+    
+    def initialize
+      @post_ip_uri = "http://members.dyndns.org/nic/update"
+      @working_dir = '.'
+    end
+    
+    def post_cache_file
+      @working_dir + '/dyndns-post.txt'
+    end
+    
+    def ip_updated( ip )
+      unless @username
+        raise "No username specified for dyndns"
+      end
+      unless @password
+        raise "No password specified for dyndns"
+      end
+      unless @domain
+        raise "No domain specified"
+      end
+      
+      File.open( post_cache_file, 'w' ) do |s|
+	s.puts "##{Time.now} - Posting IP addy to #{@post_ip_uri}..."
+      end
+
+      uri = URI.parse( @post_ip_uri )
+      uri.user = @username
+      uri.password = @password
+      uri.query =
+	"system=dyndns&" \
+        "hostname=#{domain}&" \
+        "myip=#{ip}&" \
+        "wildcard=NOCHG&" \
+	"mx=NOCHG&" \
+	"backmx=NOCHG&" \
+        "offline=NO"
+      res = SimpleHTTPClient.instance.fetch_uri( uri )
+      
+      File.open( post_cache_file, 'w' ) do |s|
+	s.write res
+      end
+      return res.split("\n")
+    end
+  end
+  
+  class HETunnelUpdater
+    attr_accessor :username, :password, :tunnel_id, :working_dir
+    
+    def initialize
+      # @post_ip_uri = 'https://ipv4.tunnelbroker.net/ipv4_end.php?tid=TUNNELID&ip=IPV4ADDR'
+      @working_dir = '.'
+    end
+    
+    def post_cache_file
+      @working_dir + '/tunnelbroker-post.txt'
+    end
+    
+    def ip_updated( ip )
+      unless @username
+        raise "No username specified for tunnelbroker.net"
+      end
+      unless @password
+        raise "No password specified for tunnelbroker.net"
+      end
+      unless @tunnel_id
+        raise "No tunnel ID specified for tunnelbroker.net"
+      end
+      
+      uri = 'https://'+CGI.escape(@username)+':'+CGI.escape(@password)+
+        '@ipv4.tunnelbroker.net/ipv4_end.php?tid='+
+        CGI.escape(@tunnel_id)+'&ip='+CGI.escape(ip)
+      
+      system 'wget','--no-check-certificate',uri,'-O',post_cache_file
+    end
+  end
+  
+  class DynDNSClient2
+    def initialize
+      @http_client = SimpleHTTPClient.instance
+
+      @working_dir = '.'
+      @min_fetch_ip_interval = 10*60
+      @min_post_interval = 24*3600
+      @max_post_interval = 28*24*3600
+      
+      # @fetch_ip_uri = "http://checkip.dyndns.org/"
+      @fetch_ip_uri = "http://togosdyndns2.appjet.net/status"
+      
+      @ip_fetcher = IfconfigIPFetcher.new('eth0')
+      @updaters = []
+    end
+    
+    def fetch_uri_timeout=( v ) ; @http_client.fetch_uri_timeout = v ; end
+    
+    attr_accessor :http_client
+    attr_accessor :ip_fetcher
+    attr_accessor :updaters
+    attr_accessor :mode
+    attr_accessor :working_dir
+    attr_accessor :username, :password, :domain
+    attr_accessor :min_fetch_ip_interval
+    attr_accessor :min_post_interval, :max_post_interval
+    
+    def ip_cache_file
+      @working_dir + '/my-ip.txt'
+    end
+    
+    def log_file
+      @working_dir + '/log.txt'
+    end
+    
+    def fetch_ip
+      return @ip_fetcher.fetch_ip
+    end
+    
+    def old_ip
+      File.exist?( self.ip_cache_file ) and
+        ip = File.read( self.ip_cache_file ).strip and
+        ip_valid?( ip ) and ip
+    end
+
+    def old_ip=( str )
+      open( self.ip_cache_file, 'w' ) do |s|
+	s.puts( str )
+      end
+      return str
+    end
+
+    def ip_valid?( ip )
+      ip =~ /^\d+\.\d+\.\d+\.\d+$/
+    end
+
+    def log( crap )
+      open( log_file, 'a' ) do |s|
+	m = "#{Time.now} - #{crap}"
+	puts m
+	s.puts  m
+      end
+    end
+    
+    def ip_updated( ip )
+      for u in @updaters
+        u.ip_updated( ip )
+      end
+    end
+    
+    def run
+      begin
+        oldip = self.old_ip
+        newip = self.fetch_ip
+        
+        post_cache_file = @working_dir + '/post.txt'
+        
+        if File.exist? post_cache_file
+          interval = (Time.now - File.mtime( post_cache_file )).to_i
+        else
+          interval = 1.0/0.0
+        end
+
+        if !newip
+          raise "Could not determine current IP"
+        elsif oldip
+          if oldip != newip
+            if interval < @min_post_interval
+              log "IP changed from #{oldip} to #{newip}, " \
+                  "but not enough time since last post: #{interval}."
+            else
+              self.old_ip = newip
+              log( "IP changed from #{oldip} to #{newip}.  Posting now." )
+              ip_updated newip
+            end
+          elsif interval > @max_post_interval
+            log( "IP unchanged (#{newip}), but need to repost." )
+            ip_updated newip
+            self.old_ip = newip
+            system 'touch', post_cache_file
+          else
+            # No changes, no post needed
+            system "touch", log_file
+          end
+        elsif interval < @min_post_interval
+          log "No old IP, but not enough time since last post: #{interval}."
+        else
+          log "No old IP.  Posting now."
+          ip_updated newip
+          self.old_ip = newip          
+        end
+      rescue => e
+        log( "Error: #{e.message}" )
+        raise
+      end
+    end
+
+    USAGE = <<-EOS
+Usage: tdyndns2 [options]
+General options:
+  -working-dir <dir>   ; specify dir to hold logs, cache files.
+  -ifconfig-if <iface> ; name of network interface to get IP addry from
+
+DynDNS options:
+  -update-dyndns       ; Send update to dyndns.org
+  -dyndns-login <username>:<password>
+  -domain <domain>
+
+Tunnelbroker.net options:
+  -update-he           ; Send update to tunnelbroker.net
+  -he-login <username>:<password>
+  -he-tunnel-id <id>
+EOS
+    
+    def run_command( args )
+      args = args.clone
+      
+      dyndns_updater = TOGoS::DynDNS::DynDNSUpdater.new
+      he_updater = TOGoS::DynDNS::HETunnelUpdater.new
+      
+      while arg = args.shift
+        case arg
+        when '-working-dir'
+          @working_dir = 
+            dyndns_updater.working_dir =
+            he_updater.working_dir =
+            args.shift
+        
+        when '-update-dyndns'
+          @updaters << dyndns_updater
+        when '-dyndns-login'
+          info = args.shift.split(':',2)
+          unless info.length == 2
+            STDERR.puts "Must give username:password after -tdyndns-login"
+          end
+          dyndns_updater.username = info[0]
+          dyndns_updater.password = info[1]
+        when '-domain'
+          dyndns_updater.domain = args.shift
+          
+        when '-update-he'
+          @updaters << he_updater
+        when '-he-login'
+          info = args.shift.split(':',2)
+          unless info.length == 2
+            STDERR.puts "Must give username:password after -he-login"
+          end
+          he_updater.username = info[0]
+          he_updater.password = info[1]
+        when '-he-tunnel-id'
+          he_updater.tunnel_id = args.shift
+          
+        when '-ifconfig-if'
+          @ip_fetcher = TOGoS::DynDNS::IfconfigIPFetcher.new( args.shift )
+        when '-fetch-ip-uri'
+          @ip_fetcher = TOGoS::DynDNS::TOGoSIPFetcher.new( args.shift )
+        #when '-post-ip-uri'
+        #  c.post_ip_uri = args.shift
+        #when '-fetch-only'
+        #  c.mode = :fetch_only
+        
+        when '-use-resolv'
+          @http_client.use_resolv = TRUE
+        when '-fetch-uri-timeout'
+          @http_client.fetch_uri_timeout = args.shift.to_f
+          
+        when '-h','-?','-help','--help'
+          STDOUT.puts USAGE
+          return 0
+          
+        else
+          STDERR.puts "Unrecognised arg: #{arg}"
+          STDERR.puts USAGE
+          #  -fetch-only          ; fetch IP and print result; do not post
+          #    EOS
+          return 1
+        end
+      end
+      
+      if @updaters.length == 0
+        STDERR.puts "No updaters specified!"
+        return 1
+      end
+      
+      run
+      
+      return 0
+    end
+  end
+end ; end
+
+exit TOGoS::DynDNS::DynDNSClient2.new.run_command( $* ) if __FILE__ == $0
