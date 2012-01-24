@@ -11,6 +11,45 @@ require 'base64'
 module TOGoS ; module DynDNS
   VERSION = "2011-09-12"
   
+  class Workspace
+    def self.instance=(inst)
+      @instance = inst
+    end
+    def self.instance
+      @instance ||= self.new( '.' )
+    end
+    
+    attr_reader :dir
+    
+    def initialize( dir )
+      @dir = dir
+    end
+    
+    def log_file
+      @dir + '/log.txt'
+    end
+    
+    def logger
+      @logger ||= Logger.new(log_file)
+    end
+  end
+  
+  class Logger
+    attr_reader :log_file
+    
+    def initialize( log_file )
+      @log_file = log_file
+    end
+    
+    def log( crap )
+      open( log_file, 'a' ) do |s|
+	m = "#{Time.now} - #{crap}"
+	puts m
+	s.puts  m
+      end
+    end
+  end
+    
   class SimpleHTTPClient
     def self.instance ; @instance ||= self.new ; end
     
@@ -62,8 +101,20 @@ module TOGoS ; module DynDNS
   class TOGoSIPFetcher
     attr_accessor :uri
     
+    def initialize( uri )
+      @uri = uri
+    end
+    
     def fetch_ip
-      raise "Oops, deleted this code!"
+      IO.popen("wget '#{@uri}' -O - 2>/dev/null",'r') do |s|
+        while line = s.gets
+          line.strip!
+          if line =~ /^Current IP Address: (.*)$/
+            return $1
+          end
+        end
+      end
+      return nil
     end
   end
   
@@ -81,15 +132,14 @@ module TOGoS ; module DynDNS
   end
   
   class DynDNSUpdater
-    attr_accessor :username, :password, :domain, :working_dir
+    attr_accessor :username, :password, :domain
     
     def initialize
       @post_ip_uri = "http://members.dyndns.org/nic/update"
-      @working_dir = '.'
     end
     
     def post_cache_file
-      @working_dir + '/dyndns-post.txt'
+      Workspace.instance.dir + '/dyndns-post.txt'
     end
     
     def ip_updated( ip )
@@ -118,6 +168,7 @@ module TOGoS ; module DynDNS
 	"mx=NOCHG&" \
 	"backmx=NOCHG&" \
         "offline=NO"
+      Workspace.instance.logger.log( "fetching #{uri}" )
       res = SimpleHTTPClient.instance.fetch_uri( uri )
       
       File.open( post_cache_file, 'w' ) do |s|
@@ -127,16 +178,28 @@ module TOGoS ; module DynDNS
     end
   end
   
+  class CmdUpdater
+    attr_accessor :cmd
+    
+    def initialize( cmd )
+      @cmd = cmd
+    end
+    
+    def ip_updated( ip )
+      Workspace.instance.logger.log( "$ '#{@cmd}' '#{ip}'" )
+      system @cmd, ip
+    end
+  end
+  
   class HETunnelUpdater
     attr_accessor :username, :password, :tunnel_id, :working_dir
     
     def initialize
       # @post_ip_uri = 'https://ipv4.tunnelbroker.net/ipv4_end.php?tid=TUNNELID&ip=IPV4ADDR'
-      @working_dir = '.'
     end
     
     def post_cache_file
-      @working_dir + '/tunnelbroker-post.txt'
+      Workspace.instance.dir + '/tunnelbroker-post.txt'
     end
     
     def ip_updated( ip )
@@ -154,6 +217,7 @@ module TOGoS ; module DynDNS
         '@ipv4.tunnelbroker.net/ipv4_end.php?tid='+
         CGI.escape(@tunnel_id)+'&ip='+CGI.escape(ip)
       
+      Workspace.instance.logger.log( "wgetting #{uri}" )
       system 'wget','--no-check-certificate',uri,'-O',post_cache_file
     end
   end
@@ -161,8 +225,7 @@ module TOGoS ; module DynDNS
   class DynDNSClient2
     def initialize
       @http_client = SimpleHTTPClient.instance
-
-      @working_dir = '.'
+      
       @min_fetch_ip_interval = 10*60
       @min_post_interval = 24*3600
       @max_post_interval = 28*24*3600
@@ -172,6 +235,7 @@ module TOGoS ; module DynDNS
       
       @ip_fetcher = IfconfigIPFetcher.new('eth0')
       @updaters = []
+      @listeners = []
     end
     
     def fetch_uri_timeout=( v ) ; @http_client.fetch_uri_timeout = v ; end
@@ -186,11 +250,7 @@ module TOGoS ; module DynDNS
     attr_accessor :min_post_interval, :max_post_interval
     
     def ip_cache_file
-      @working_dir + '/my-ip.txt'
-    end
-    
-    def log_file
-      @working_dir + '/log.txt'
+      Workspace.instance.dir + '/my-ip.txt'
     end
     
     def fetch_ip
@@ -214,18 +274,14 @@ module TOGoS ; module DynDNS
       ip =~ /^\d+\.\d+\.\d+\.\d+$/
     end
 
-    def log( crap )
-      open( log_file, 'a' ) do |s|
-	m = "#{Time.now} - #{crap}"
-	puts m
-	s.puts  m
-      end
-    end
-    
     def ip_updated( ip )
       for u in @updaters
         u.ip_updated( ip )
       end
+    end
+    
+    def log( x )
+      Workspace.instance.logger.log( x )
     end
     
     def run
@@ -233,7 +289,7 @@ module TOGoS ; module DynDNS
         oldip = self.old_ip
         newip = self.fetch_ip
         
-        post_cache_file = @working_dir + '/post.txt'
+        post_cache_file = Workspace.instance.dir + '/post.txt'
         
         if File.exist? post_cache_file
           interval = (Time.now - File.mtime( post_cache_file )).to_i
@@ -260,18 +316,22 @@ module TOGoS ; module DynDNS
             system 'touch', post_cache_file
           else
             # No changes, no post needed
-            system "touch", log_file
+            system "touch", Workspace.instance.log_file
           end
         elsif interval < @min_post_interval
           log "No old IP, but not enough time since last post: #{interval}."
         else
           log "No old IP.  Posting now."
           ip_updated newip
-          self.old_ip = newip          
+          self.old_ip = newip
         end
       rescue => e
         log( "Error: #{e.message}" )
         raise
+      end
+      
+      for l in @listeners
+        l.ip_updated( newip )
       end
     end
 
@@ -280,6 +340,9 @@ Usage: tdyndns2 [options]
 General options:
   -working-dir <dir>   ; specify dir to hold logs, cache files.
   -ifconfig-if <iface> ; name of network interface to get IP addry from
+  -fetch-ip-uri <url>  ; URL to fetch IP from
+  -always <cmd>        ; command to run (<cmd> <new-ip>) after IP has been fetched
+  -on-update <cmd>     ; command to run (<cmd> <new-ip>) only when IP has changed
 
 DynDNS options:
   -update-dyndns       ; Send update to dyndns.org
@@ -292,6 +355,10 @@ Tunnelbroker.net options:
   -he-tunnel-id <id>
 EOS
     
+    def working_dir=(dir)
+      
+    end
+    
     def run_command( args )
       args = args.clone
       
@@ -301,11 +368,11 @@ EOS
       while arg = args.shift
         case arg
         when '-working-dir'
-          @working_dir = 
-            dyndns_updater.working_dir =
-            he_updater.working_dir =
-            args.shift
-        
+          Workspace.instance = Workspace.new( args.shift )
+        when '-always'
+          @listeners << CmdUpdater.new(args.shift)
+        when '-on-update'
+          @updaters << CmdUpdater.new(args.shift)
         when '-update-dyndns'
           @updaters << dyndns_updater
         when '-dyndns-login'
@@ -357,8 +424,8 @@ EOS
         end
       end
       
-      if @updaters.length == 0
-        STDERR.puts "No updaters specified!"
+      if @updaters.length == 0 and @listeners.length == 0
+        STDERR.puts "No updaters or listeners specified!"
         return 1
       end
       
