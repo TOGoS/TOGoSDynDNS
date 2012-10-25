@@ -9,7 +9,7 @@ require 'socket'
 require 'base64'
 
 module TOGoS ; module DynDNS
-  VERSION = "2011-09-12"
+  VERSION = "2012-10-24"
   
   class Workspace
     def self.instance=(inst)
@@ -58,7 +58,7 @@ module TOGoS ; module DynDNS
     attr_accessor :user_agent
     
     def initialize
-      @use_resolv = true
+      @use_resolv = false
       @fetch_uri_timeout = 15
       @user_agent = "TOGoS's DynDNS Updater 2, #{VERSION}"
     end
@@ -407,7 +407,7 @@ EOS
         #  c.mode = :fetch_only
         
         when '-use-resolv'
-          @http_client.use_resolv = TRUE
+          @http_client.use_resolv = true
         when '-fetch-uri-timeout'
           @http_client.fetch_uri_timeout = args.shift.to_f
           
