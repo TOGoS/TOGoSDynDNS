@@ -53,7 +53,7 @@ module TOGoS ; module DynDNS
   class SimpleHTTPClient
     def self.instance ; @instance ||= self.new ; end
     
-    attr_accessor :use_resolv
+    attr_accessor :use_ipv4, :use_resolv
     attr_accessor :fetch_uri_timeout
     attr_accessor :user_agent
     
@@ -69,10 +69,18 @@ module TOGoS ; module DynDNS
 	unless uri.scheme = 'http'
 	  raise "Only HTTP supported"
 	end
-
+        
 	fp = uri.path + (uri.query ? "?#{uri.query}" : '')
-	if @use_resolv
-	  hostip = Resolv.getaddress( uri.host )
+        if @use_ipv4
+          host_ips = Resolv.getaddresses( uri.host )
+          for h in host_ips
+            STDERR.puts "#{uri.host} -> #{h}"
+            if h =~ /^\d+\.\d+\.\d+\.\d+$/
+              hostip = h
+            end
+          end
+        elsif @use_resolv
+          hostip = Resolv.getaddress( uri.host )
 	else
 	  hostip = uri.host
 	end
@@ -408,6 +416,8 @@ EOS
         #when '-fetch-only'
         #  c.mode = :fetch_only
         
+        when '-use-ipv4'
+          @http_client.use_ipv4 = true
         when '-use-resolv'
           @http_client.use_resolv = true
         when '-fetch-uri-timeout'
