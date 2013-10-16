@@ -106,10 +106,10 @@ module TOGoS ; module DynDNS
     end
     
     def fetch_ip
-      IO.popen("wget '#{@uri}' -O - 2>/dev/null",'r') do |s|
+      IO.popen("wget -4 '#{@uri}' -O - 2>/dev/null",'r') do |s|
         while line = s.gets
           line.strip!
-          if line =~ /^Current IP Address: (.*)$/
+          if line =~ /^(?:Addr|Current IP Address): (.*)$/
             return $1
           end
         end
