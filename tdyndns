@@ -273,11 +273,16 @@ module TOGoS ; module DynDNS
     def ip_valid?( ip )
       ip =~ /^\d+\.\d+\.\d+\.\d+$/
     end
-
+    
+    def post_cache_file
+      Workspace.instance.dir + '/post.txt'
+    end
+    
     def ip_updated( ip )
       for u in @updaters
         u.ip_updated( ip )
       end
+      system 'touch', post_cache_file
     end
     
     def log( x )
@@ -289,14 +294,12 @@ module TOGoS ; module DynDNS
         oldip = self.old_ip
         newip = self.fetch_ip
         
-        post_cache_file = Workspace.instance.dir + '/post.txt'
-        
         if File.exist? post_cache_file
           interval = (Time.now - File.mtime( post_cache_file )).to_i
         else
           interval = 1.0/0.0
         end
-
+        
         if !newip
           raise "Could not determine current IP"
         elsif oldip
@@ -313,7 +316,6 @@ module TOGoS ; module DynDNS
             log( "IP unchanged (#{newip}), but need to repost." )
             ip_updated newip
             self.old_ip = newip
-            system 'touch', post_cache_file
           else
             # No changes, no post needed
             system "touch", Workspace.instance.log_file
