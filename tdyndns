@@ -9,8 +9,6 @@ require 'socket'
 require 'base64'
 
 module TOGoS ; module DynDNS
-  VERSION = "2012-10-24"
-  
   class Workspace
     def self.instance=(inst)
       @instance = inst
@@ -60,7 +58,7 @@ module TOGoS ; module DynDNS
     def initialize
       @use_resolv = false
       @fetch_uri_timeout = 15
-      @user_agent = "TOGoS's DynDNS Updater 2, #{VERSION}"
+      @user_agent = "TOGoS's DynDNS Updater 2"
     end
 
     def fetch_uri( uri )
