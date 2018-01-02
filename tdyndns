@@ -114,6 +114,9 @@ module TOGoS ; module DynDNS
     end
     
     def fetch_ip
+      # -4 should probably be an option.
+      # It's here because I want to find out my IPv4 address.
+      # Partly because I use this to set up IPv6 tunnels!
       IO.popen("wget -4 '#{@uri}' -O - 2>/dev/null",'r') do |s|
         while line = s.gets
           line.strip!
